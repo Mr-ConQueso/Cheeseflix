@@ -13,7 +13,14 @@ import {
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { router, useGlobalSearchParams, useNavigation } from "expo-router";
 import { useAtomValue } from "jotai";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Platform, View } from "react-native";
 import { useSharedValue } from "react-native-reanimated";
@@ -41,55 +48,106 @@ import { storage } from "@/utils/mmkv";
 import generateDeviceProfile from "@/utils/profiles/native";
 import { msToTicks, ticksToSeconds } from "@/utils/time";
 
+/* ---------- helpers ---------- */
+
 const downloadProvider = !Platform.isTV
   ? require("@/providers/DownloadProvider")
   : { useDownload: () => null };
 
 const IGNORE_SAFE_AREAS_KEY = "video_player_ignore_safe_areas";
 
-export default function page() {
+/* ---------- performance monitor ---------- */
+
+const usePerformanceMonitoring = (name: string) => {
+  useEffect(() => {
+    const start = performance.now();
+    return () => {
+      const end = performance.now();
+      const ms = end - start;
+      if (ms > 16.67) {
+        // >1 frame at 60 fps
+        console.warn(`[Perf] ${name} render took ${ms.toFixed(1)} ms`);
+      }
+    };
+  });
+};
+
+/* ---------- reducer ---------- */
+
+interface VideoState {
+  isPlaying: boolean;
+  isMuted: boolean;
+  isBuffering: boolean;
+  isVideoLoaded: boolean;
+  isPipStarted: boolean;
+}
+type VideoAction =
+  | { type: "PLAYING_CHANGED"; value: boolean }
+  | { type: "BUFFERING_CHANGED"; value: boolean }
+  | { type: "VIDEO_LOADED" }
+  | { type: "MUTED_CHANGED"; value: boolean }
+  | { type: "PIP_CHANGED"; value: boolean };
+
+const videoReducer = (state: VideoState, action: VideoAction): VideoState => {
+  switch (action.type) {
+    case "PLAYING_CHANGED":
+      return { ...state, isPlaying: action.value };
+    case "BUFFERING_CHANGED":
+      return { ...state, isBuffering: action.value };
+    case "VIDEO_LOADED":
+      return { ...state, isVideoLoaded: true, isBuffering: false };
+    case "MUTED_CHANGED":
+      return { ...state, isMuted: action.value };
+    case "PIP_CHANGED":
+      return { ...state, isPipStarted: action.value };
+    default:
+      return state;
+  }
+};
+
+const initialVideoState: VideoState = {
+  isPlaying: false,
+  isMuted: false,
+  isBuffering: true,
+  isVideoLoaded: false,
+  isPipStarted: false,
+};
+
+/* ---------- main component ---------- */
+
+export default function DirectPlayerPage() {
+  usePerformanceMonitoring("DirectPlayerPage");
+
+  /* ---------- refs & atoms ---------- */
   const videoRef = useRef<VlcPlayerViewRef>(null);
   const user = useAtomValue(userAtom);
   const api = useAtomValue(apiAtom);
-  const { t } = useTranslation();
-  const navigation = useNavigation();
 
-  const [isPlaybackStopped, setIsPlaybackStopped] = useState(false);
+  const navigation = useNavigation();
+  const { t } = useTranslation();
+
+  /* ---------- consolidated playback state ---------- */
+  const [videoState, dispatch] = useReducer(videoReducer, initialVideoState);
+
+  /* ---------- misc UI state ---------- */
   const [showControls, _setShowControls] = useState(true);
   const [ignoreSafeAreas, setIgnoreSafeAreas] = useState(() => {
-    // Load persisted state from storage
-    const saved = storage.getBoolean(IGNORE_SAFE_AREAS_KEY);
-    return saved ?? false;
+    return storage.getBoolean(IGNORE_SAFE_AREAS_KEY) ?? false;
   });
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isBuffering, setIsBuffering] = useState(true);
-  const [isVideoLoaded, setIsVideoLoaded] = useState(false);
-  const [isPipStarted, setIsPipStarted] = useState(false);
+  const [isPlaybackStopped, setIsPlaybackStopped] = useState(false);
+
+  const insets = useSafeAreaInsets();
+  const [settings] = useSettings();
 
   const progress = useSharedValue(0);
   const isSeeking = useSharedValue(false);
   const cacheProgress = useSharedValue(0);
+  const lightHapticFeedback = useHaptic("light");
   const VolumeManager = Platform.isTV
     ? null
     : require("react-native-volume-manager");
 
-  const getDownloadedItem = downloadProvider.useDownload();
-
-  const revalidateProgressCache = useInvalidatePlaybackProgressCache();
-
-  const lightHapticFeedback = useHaptic("light");
-
-  const setShowControls = useCallback((show: boolean) => {
-    _setShowControls(show);
-    lightHapticFeedback();
-  }, []);
-
-  // Persist ignoreSafeAreas state whenever it changes
-  useEffect(() => {
-    storage.set(IGNORE_SAFE_AREAS_KEY, ignoreSafeAreas);
-  }, [ignoreSafeAreas]);
-
+  /* ---------- URL params ---------- */
   const {
     itemId,
     audioIndex: audioIndexStr,
@@ -105,71 +163,85 @@ export default function page() {
     mediaSourceId: string;
     bitrateValue: string;
     offline: string;
-    /** Playback position in ticks. */
     playbackPosition?: string;
   }>();
-  const [settings] = useSettings();
-  const insets = useSafeAreaInsets();
-  const offline = offlineStr === "true";
 
-  const audioIndex = audioIndexStr
-    ? Number.parseInt(audioIndexStr, 10)
-    : undefined;
-  const subtitleIndex = subtitleIndexStr
-    ? Number.parseInt(subtitleIndexStr, 10)
-    : -1;
+  const offline = offlineStr === "true";
+  const audioIndex = audioIndexStr ? parseInt(audioIndexStr, 10) : undefined;
+  const subtitleIndex = subtitleIndexStr ? parseInt(subtitleIndexStr, 10) : -1;
   const bitrateValue = bitrateValueStr
-    ? Number.parseInt(bitrateValueStr, 10)
+    ? parseInt(bitrateValueStr, 10)
     : BITRATES[0].value;
 
+  /* ---------- stable callbacks ---------- */
+  const setShowControls = useCallback(
+    (show: boolean) => {
+      _setShowControls(show);
+      lightHapticFeedback();
+    },
+    [lightHapticFeedback],
+  );
+
+  useEffect(() => {
+    storage.set(IGNORE_SAFE_AREAS_KEY, ignoreSafeAreas);
+  }, [ignoreSafeAreas]);
+
+  /* ---------- data fetching ---------- */
+
+  /* item */
   const [item, setItem] = useState<BaseItemDto | null>(null);
   const [itemStatus, setItemStatus] = useState({
     isLoading: true,
     isError: false,
   });
+  const getDownloadedItem = downloadProvider.useDownload();
 
-  /** Gets the initial playback position from the URL or the item's user data. */
   const getInitialPlaybackTicks = useCallback((): number => {
     if (playbackPositionFromUrl) {
-      return Number.parseInt(playbackPositionFromUrl, 10);
+      return parseInt(playbackPositionFromUrl, 10);
     }
     return item?.UserData?.PlaybackPositionTicks ?? 0;
   }, [playbackPositionFromUrl, item]);
 
   useEffect(() => {
-    const fetchItemData = async () => {
+    if (!itemId) return;
+
+    const controller = new AbortController();
+    (async () => {
       setItemStatus({ isLoading: true, isError: false });
       try {
         let fetchedItem: BaseItemDto | null = null;
         if (offline && !Platform.isTV) {
           const data = await getDownloadedItem.getDownloadedItem(itemId);
-          if (data) fetchedItem = data.item as BaseItemDto;
+          fetchedItem = data?.item as BaseItemDto | null;
         } else {
-          const res = await getUserLibraryApi(api!).getItem({
-            itemId,
-            userId: user?.Id,
-          });
+          const res = await getUserLibraryApi(api!).getItem(
+            { itemId, userId: user?.Id },
+            { signal: controller.signal },
+          );
           fetchedItem = res.data;
         }
-        setItem(fetchedItem);
-        setItemStatus({ isLoading: false, isError: false });
+        if (!controller.signal.aborted) {
+          setItem(fetchedItem);
+          setItemStatus({ isLoading: false, isError: false });
+        }
       } catch (error) {
-        console.error("Failed to fetch item:", error);
-        setItemStatus({ isLoading: false, isError: true });
+        if (!controller.signal.aborted) {
+          console.error("Failed to fetch item:", error);
+          setItemStatus({ isLoading: false, isError: true });
+        }
       }
-    };
+    })();
 
-    if (itemId) {
-      fetchItemData();
-    }
-  }, [itemId, offline, api, user?.Id]);
+    return () => controller.abort();
+  }, [itemId, offline, api, user?.Id, getDownloadedItem]);
 
+  /* stream */
   interface Stream {
     mediaSource: MediaSourceInfo;
     sessionId: string;
     url: string;
   }
-
   const [stream, setStream] = useState<Stream | null>(null);
   const [streamStatus, setStreamStatus] = useState({
     isLoading: true,
@@ -179,18 +251,16 @@ export default function page() {
   useEffect(() => {
     const fetchStreamData = async () => {
       setStreamStatus({ isLoading: true, isError: false });
-      const native = await generateDeviceProfile();
       try {
+        const native = await generateDeviceProfile();
         let result: Stream | null = null;
+
         if (offline && !Platform.isTV) {
           const data = await getDownloadedItem.getDownloadedItem(itemId);
           if (!data?.mediaSource) return;
           const url = await getDownloadedFileUrl(data.item.Id!);
-          if (item) {
-            result = { mediaSource: data.mediaSource, sessionId: "", url };
-          }
-        } else {
-          if (!item) return;
+          result = { mediaSource: data.mediaSource, sessionId: "", url };
+        } else if (item) {
           const res = await getStreamUrl({
             api,
             item,
@@ -198,7 +268,7 @@ export default function page() {
             userId: user?.Id,
             audioStreamIndex: audioIndex,
             maxStreamingBitrate: bitrateValue,
-            mediaSourceId: mediaSourceId,
+            mediaSourceId,
             subtitleStreamIndex: subtitleIndex,
             deviceProfile: native,
           });
@@ -213,6 +283,7 @@ export default function page() {
           }
           result = { mediaSource, sessionId, url };
         }
+
         setStream(result);
         setStreamStatus({ isLoading: false, isError: false });
       } catch (error) {
@@ -220,219 +291,258 @@ export default function page() {
         setStreamStatus({ isLoading: false, isError: true });
       }
     };
+
     fetchStreamData();
-  }, [itemId, mediaSourceId, bitrateValue, api, item, user?.Id]);
-
-  useEffect(() => {
-    if (!stream) return;
-
-    const reportPlaybackStart = async () => {
-      await getPlaystateApi(api!).reportPlaybackStart({
-        playbackStartInfo: currentPlayStateInfo() as PlaybackStartInfo,
-      });
-    };
-
-    reportPlaybackStart();
-  }, [stream]);
-
-  const togglePlay = async () => {
-    lightHapticFeedback();
-    setIsPlaying(!isPlaying);
-    if (isPlaying) {
-      await videoRef.current?.pause();
-      reportPlaybackProgress();
-    } else {
-      videoRef.current?.play();
-      await getPlaystateApi(api!).reportPlaybackStart({
-        playbackStartInfo: currentPlayStateInfo() as PlaybackStartInfo,
-      });
-    }
-  };
-
-  const reportPlaybackStopped = useCallback(async () => {
-    if (offline) return;
-    const currentTimeInTicks = msToTicks(progress.get());
-    await getPlaystateApi(api!).onPlaybackStopped({
-      itemId: item?.Id!,
-      mediaSourceId: mediaSourceId,
-      positionTicks: currentTimeInTicks,
-      playSessionId: stream?.sessionId!,
-    });
-
-    revalidateProgressCache();
   }, [
+    itemId,
+    mediaSourceId,
+    bitrateValue,
     api,
     item,
-    mediaSourceId,
-    stream,
-    progress,
+    user?.Id,
     offline,
-    revalidateProgressCache,
+    getInitialPlaybackTicks,
+    audioIndex,
+    subtitleIndex,
   ]);
 
-  const stop = useCallback(() => {
-    reportPlaybackStopped();
-    setIsPlaybackStopped(true);
-    videoRef.current?.stop();
-  }, [videoRef, reportPlaybackStopped]);
+  /* ---------- playback API reporting ---------- */
 
-  useEffect(() => {
-    const beforeRemoveListener = navigation.addListener("beforeRemove", stop);
-    return () => {
-      beforeRemoveListener();
-    };
-  }, [navigation, stop]);
+  const revalidateProgressCache = useInvalidatePlaybackProgressCache();
 
-  const currentPlayStateInfo = () => {
-    if (!stream) return;
+  const currentPlayStateInfo = useMemo(() => {
+    if (!stream) return null;
     return {
       itemId: item?.Id!,
-      audioStreamIndex: audioIndex ? audioIndex : undefined,
-      subtitleStreamIndex: subtitleIndex ? subtitleIndex : undefined,
-      mediaSourceId: mediaSourceId,
+      audioStreamIndex: audioIndex,
+      subtitleStreamIndex: subtitleIndex,
+      mediaSourceId,
       positionTicks: msToTicks(progress.get()),
-      isPaused: !isPlaying,
-      playMethod: stream?.url.includes("m3u8") ? "Transcode" : "DirectStream",
+      isPaused: !videoState.isPlaying,
+      playMethod: stream.url.includes("m3u8") ? "Transcode" : "DirectStream",
       playSessionId: stream.sessionId,
-      isMuted: isMuted,
+      isMuted: videoState.isMuted,
       canSeek: true,
       repeatMode: RepeatMode.RepeatNone,
       playbackOrder: PlaybackOrder.Default,
     };
-  };
-
-  const onProgress = useCallback(
-    async (data: ProgressUpdatePayload) => {
-      if (isSeeking.get() || isPlaybackStopped) return;
-
-      const { currentTime } = data.nativeEvent;
-      if (isBuffering) {
-        setIsBuffering(false);
-      }
-
-      progress.set(currentTime);
-
-      // Update the playback position in the URL.
-      router.setParams({
-        playbackPosition: msToTicks(currentTime).toString(),
-      });
-
-      if (offline) return;
-      if (!item?.Id || !stream) return;
-
-      reportPlaybackProgress();
-    },
-    [
-      item?.Id,
-      audioIndex,
-      subtitleIndex,
-      mediaSourceId,
-      isPlaying,
-      stream,
-      isSeeking,
-      isPlaybackStopped,
-      isBuffering,
-    ],
-  );
-
-  const onPipStarted = useCallback((e: PipStartedPayload) => {
-    const { pipStarted } = e.nativeEvent;
-    setIsPipStarted(pipStarted);
-  }, []);
-
-  const reportPlaybackProgress = useCallback(async () => {
-    if (!api || offline || !stream) return;
-    await getPlaystateApi(api).reportPlaybackProgress({
-      playbackProgressInfo: currentPlayStateInfo() as PlaybackProgressInfo,
-    });
   }, [
-    api,
-    isPlaying,
-    offline,
-    stream,
     item?.Id,
     audioIndex,
     subtitleIndex,
     mediaSourceId,
     progress,
+    videoState.isPlaying,
+    videoState.isMuted,
+    stream,
   ]);
 
-  /** Gets the initial playback position in seconds. */
-  const startPosition = useMemo(() => {
-    if (offline) return 0;
-    return ticksToSeconds(getInitialPlaybackTicks());
-  }, [offline, getInitialPlaybackTicks]);
+  const reportPlaybackProgress = useCallback(async () => {
+    if (!api || offline || !stream || !currentPlayStateInfo) return;
+    await getPlaystateApi(api).reportPlaybackProgress({
+      playbackProgressInfo: currentPlayStateInfo as PlaybackProgressInfo,
+    });
+  }, [api, offline, stream, currentPlayStateInfo]);
+
+  const reportPlaybackStopped = useCallback(async () => {
+    if (offline || !stream) return;
+    await getPlaystateApi(api!).onPlaybackStopped({
+      itemId: item?.Id!,
+      mediaSourceId,
+      positionTicks: msToTicks(progress.get()),
+      playSessionId: stream.sessionId,
+    });
+    revalidateProgressCache();
+  }, [
+    api,
+    item?.Id,
+    mediaSourceId,
+    progress,
+    stream,
+    offline,
+    revalidateProgressCache,
+  ]);
+
+  /* ---------- UI / player actions ---------- */
+
+  const togglePlay = useCallback(async () => {
+    lightHapticFeedback();
+    const playing = videoState.isPlaying;
+    dispatch({ type: "PLAYING_CHANGED", value: !playing });
+
+    if (playing) {
+      await videoRef.current?.pause();
+      reportPlaybackProgress();
+    } else {
+      await videoRef.current?.play();
+      await getPlaystateApi(api!).reportPlaybackStart({
+        playbackStartInfo: currentPlayStateInfo as PlaybackStartInfo,
+      });
+    }
+  }, [
+    videoState.isPlaying,
+    lightHapticFeedback,
+    reportPlaybackProgress,
+    api,
+    currentPlayStateInfo,
+  ]);
+
+  /* ---------- React Navigation cleanup ---------- */
+
+  const stop = useCallback(() => {
+    reportPlaybackStopped();
+    setIsPlaybackStopped(true);
+    videoRef.current?.stop();
+  }, [reportPlaybackStopped]);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", stop);
+    return unsubscribe;
+  }, [navigation, stop]);
+
+  /* ---------- VLC init options ---------- */
+
+  const optimizedInitOptions = useMemo(() => {
+    const opts = [`--sub-text-scale=${settings.subtitleSize}`];
+
+    // reduce buffering memory
+    opts.push("--network-caching=300", "--file-caching=300");
+
+    if (Platform.OS === "android") opts.push("--aout=opensles");
+    if (Platform.OS === "ios") opts.push("--ios-hw-decoding");
+
+    // pre-select tracks
+    const notTranscoding = !stream?.mediaSource.TranscodingUrl;
+    const allAudio =
+      stream?.mediaSource.MediaStreams?.filter((s) => s.Type === "Audio") ?? [];
+    const allSubs =
+      stream?.mediaSource.MediaStreams?.filter(
+        (s) => s.Type === "Subtitle",
+      )?.sort((a, b) => Number(a.IsExternal) - Number(b.IsExternal)) ?? [];
+
+    if (subtitleIndex >= 0) {
+      const chosenSubtitleTrack = allSubs.find(
+        (s) => s.Index === subtitleIndex,
+      );
+      const textSubs = allSubs.filter((s) => s.IsTextSubtitleStream);
+      if (
+        chosenSubtitleTrack &&
+        (notTranscoding || chosenSubtitleTrack.IsTextSubtitleStream)
+      ) {
+        const finalIdx = notTranscoding
+          ? allSubs.indexOf(chosenSubtitleTrack)
+          : textSubs.indexOf(chosenSubtitleTrack);
+        opts.push(`--sub-track=${finalIdx}`);
+      }
+    }
+    if (notTranscoding && audioIndex !== undefined) {
+      const chosenAudioTrack = allAudio.find((a) => a.Index === audioIndex);
+      if (chosenAudioTrack)
+        opts.push(`--audio-track=${allAudio.indexOf(chosenAudioTrack)}`);
+    }
+
+    return opts;
+  }, [settings.subtitleSize, stream?.mediaSource, subtitleIndex, audioIndex]);
+
+  /* ---------- picture-in-picture ---------- */
+
+  const onPipStarted = useCallback((e: PipStartedPayload) => {
+    dispatch({ type: "PIP_CHANGED", value: e.nativeEvent.pipStarted });
+  }, []);
+
+  /* ---------- progress ---------- */
+
+  const onProgress = useCallback(
+    (data: ProgressUpdatePayload) => {
+      if (isSeeking.get() || isPlaybackStopped) return;
+
+      if (videoState.isBuffering)
+        dispatch({ type: "BUFFERING_CHANGED", value: false });
+
+      const { currentTime } = data.nativeEvent;
+      progress.set(currentTime);
+
+      router.setParams({ playbackPosition: msToTicks(currentTime).toString() });
+
+      if (!offline) reportPlaybackProgress();
+    },
+    [
+      isSeeking,
+      isPlaybackStopped,
+      progress,
+      offline,
+      reportPlaybackProgress,
+      videoState.isBuffering,
+    ],
+  );
+
+  /* ---------- playback state listener ---------- */
+
+  const onPlaybackStateChanged = useCallback(
+    async (e: PlaybackStatePayload) => {
+      const { state, isBuffering, isPlaying } = e.nativeEvent;
+
+      switch (state) {
+        case "Playing":
+          dispatch({ type: "PLAYING_CHANGED", value: true });
+          await activateKeepAwakeAsync();
+          reportPlaybackProgress();
+          break;
+        case "Paused":
+          dispatch({ type: "PLAYING_CHANGED", value: false });
+          await deactivateKeepAwake();
+          reportPlaybackProgress();
+          break;
+        default:
+          // fallback
+          dispatch({ type: "BUFFERING_CHANGED", value: !!isBuffering });
+          dispatch({ type: "PLAYING_CHANGED", value: !!isPlaying });
+      }
+    },
+    [reportPlaybackProgress],
+  );
+
+  /* ---------- web socket / remote ---------- */
+
+  /* volume handlers */
+  const [previousVolume, setPreviousVolume] = useState<number | null>(null);
 
   const volumeUpCb = useCallback(async () => {
     if (Platform.isTV) return;
-
-    try {
-      const { volume: currentVolume } = await VolumeManager.getVolume();
-      const newVolume = Math.min(currentVolume + 0.1, 1.0);
-
-      await VolumeManager.setVolume(newVolume);
-    } catch (error) {
-      console.error("Error adjusting volume:", error);
-    }
+    const { volume } = await VolumeManager.getVolume();
+    await VolumeManager.setVolume(Math.min(volume + 0.1, 1));
   }, []);
-  const [previousVolume, setPreviousVolume] = useState<number | null>(null);
+
+  const volumeDownCb = useCallback(async () => {
+    if (Platform.isTV) return;
+    const { volume } = await VolumeManager.getVolume();
+    await VolumeManager.setVolume(Math.max(volume - 0.1, 0));
+  }, []);
+
+  const setVolumeCb = useCallback(async (v: number) => {
+    if (Platform.isTV) return;
+    await VolumeManager.setVolume(Math.max(0, Math.min(v, 100)) / 100);
+  }, []);
 
   const toggleMuteCb = useCallback(async () => {
     if (Platform.isTV) return;
-
-    try {
-      const { volume: currentVolume } = await VolumeManager.getVolume();
-      const currentVolumePercent = currentVolume * 100;
-
-      if (currentVolumePercent > 0) {
-        // Currently not muted, so mute
-        setPreviousVolume(currentVolumePercent);
-        await VolumeManager.setVolume(0);
-        setIsMuted(true);
-      } else {
-        // Currently muted, so restore previous volume
-        const volumeToRestore = previousVolume || 50; // Default to 50% if no previous volume
-        await VolumeManager.setVolume(volumeToRestore / 100);
-        setPreviousVolume(null);
-        setIsMuted(false);
-      }
-    } catch (error) {
-      console.error("Error toggling mute:", error);
+    const { volume } = await VolumeManager.getVolume();
+    const percent = volume * 100;
+    if (percent > 0) {
+      setPreviousVolume(percent);
+      await VolumeManager.setVolume(0);
+      dispatch({ type: "MUTED_CHANGED", value: true });
+    } else {
+      const restore = previousVolume || 50;
+      await VolumeManager.setVolume(restore / 100);
+      setPreviousVolume(null);
+      dispatch({ type: "MUTED_CHANGED", value: false });
     }
   }, [previousVolume]);
-  const volumeDownCb = useCallback(async () => {
-    if (Platform.isTV) return;
-
-    try {
-      const { volume: currentVolume } = await VolumeManager.getVolume();
-      const newVolume = Math.max(currentVolume - 0.1, 0); // Decrease by 10%
-      console.log(
-        "Volume Down",
-        Math.round(currentVolume * 100),
-        "→",
-        Math.round(newVolume * 100),
-      );
-      await VolumeManager.setVolume(newVolume);
-    } catch (error) {
-      console.error("Error adjusting volume:", error);
-    }
-  }, []);
-
-  const setVolumeCb = useCallback(async (newVolume: number) => {
-    if (Platform.isTV) return;
-
-    try {
-      const clampedVolume = Math.max(0, Math.min(newVolume, 100));
-      console.log("Setting volume to", clampedVolume);
-      await VolumeManager.setVolume(clampedVolume / 100);
-    } catch (error) {
-      console.error("Error setting volume:", error);
-    }
-  }, []);
 
   useWebSocket({
-    isPlaying: isPlaying,
-    togglePlay: togglePlay,
+    isPlaying: videoState.isPlaying,
+    togglePlay,
     stopPlayback: stop,
     offline,
     toggleMute: toggleMuteCb,
@@ -441,118 +551,129 @@ export default function page() {
     setVolume: setVolumeCb,
   });
 
-  const onPlaybackStateChanged = useCallback(
-    async (e: PlaybackStatePayload) => {
-      const { state, isBuffering, isPlaying } = e.nativeEvent;
-      if (state === "Playing") {
-        setIsPlaying(true);
-        reportPlaybackProgress();
-        if (!Platform.isTV) await activateKeepAwakeAsync();
-        return;
-      }
+  /* ---------- start position ---------- */
 
-      if (state === "Paused") {
-        setIsPlaying(false);
-        reportPlaybackProgress();
-        if (!Platform.isTV) await deactivateKeepAwake();
-        return;
-      }
-
-      if (isPlaying) {
-        setIsPlaying(true);
-        setIsBuffering(false);
-      } else if (isBuffering) {
-        setIsBuffering(true);
-      }
-    },
-    [reportPlaybackProgress],
+  const startPosition = useMemo(
+    () => (offline ? 0 : ticksToSeconds(getInitialPlaybackTicks())),
+    [offline, getInitialPlaybackTicks],
   );
 
-  const allAudio =
-    stream?.mediaSource.MediaStreams?.filter(
-      (audio) => audio.Type === "Audio",
-    ) || [];
+  /* ---------- subtitle & audio helpers ---------- */
 
-  // Move all the external subtitles last, because vlc places them last.
+  const _allAudio =
+    stream?.mediaSource.MediaStreams?.filter((a) => a.Type === "Audio") ?? [];
   const allSubs =
     stream?.mediaSource.MediaStreams?.filter(
-      (sub) => sub.Type === "Subtitle",
-    ).sort((a, b) => Number(a.IsExternal) - Number(b.IsExternal)) || [];
+      (s) => s.Type === "Subtitle",
+    )?.sort((a, b) => Number(a.IsExternal) - Number(b.IsExternal)) ?? [];
 
   const externalSubtitles = allSubs
-    .filter((sub: any) => sub.DeliveryMethod === "External")
-    .map((sub: any) => ({
-      name: sub.DisplayTitle,
-      DeliveryUrl: api?.basePath + sub.DeliveryUrl,
+    .filter((s) => s.DeliveryMethod === "External")
+    .map((s) => ({
+      name: s.DisplayTitle,
+      DeliveryUrl: api?.basePath + s.DeliveryUrl,
     }));
 
-  const textSubs = allSubs.filter((sub) => sub.IsTextSubtitleStream);
+  /* ---------- player helpers (memoised safe wrappers) ---------- */
+  const safeMethod =
+    <T extends unknown[]>(
+      fn: ((...args: T) => any) | undefined,
+      name: string,
+    ) =>
+    async (...args: T) => {
+      if (!fn) {
+        writeToLog("ERROR", `${name} fn missing`, {
+          isVideoLoaded: videoState.isVideoLoaded,
+        });
+        return;
+      }
+      try {
+        return await fn(...args);
+      } catch (error) {
+        writeToLog("ERROR", `Error in ${name}`, {
+          error,
+          isVideoLoaded: videoState.isVideoLoaded,
+        });
+      }
+    };
 
-  const chosenSubtitleTrack = allSubs.find(
-    (sub) => sub.Index === subtitleIndex,
+  const play = useCallback(
+    () => safeMethod(videoRef.current?.play, "play")(),
+    [videoRef],
   );
-  const chosenAudioTrack = allAudio.find((audio) => audio.Index === audioIndex);
+  const pause = useCallback(
+    () => safeMethod(videoRef.current?.pause, "pause")(),
+    [videoRef],
+  );
+  const startPictureInPicture = useCallback(
+    () => safeMethod(videoRef.current?.startPictureInPicture, "PiP")(),
+    [videoRef],
+  );
+  const seek = useCallback(
+    (t: number) => safeMethod(videoRef.current?.seekTo, "seek")(t),
+    [videoRef],
+  );
+  const getAudioTracks = useCallback(
+    () => safeMethod(videoRef.current?.getAudioTracks, "getAudioTracks")(),
+    [videoRef],
+  );
+  const getSubtitleTracks = useCallback(
+    () =>
+      safeMethod(videoRef.current?.getSubtitleTracks, "getSubtitleTracks")(),
+    [videoRef],
+  );
+  const setAudioTrack = useCallback(
+    (i: number) =>
+      safeMethod(videoRef.current?.setAudioTrack, "setAudioTrack")(i),
+    [videoRef],
+  );
+  const setSubtitleTrack = useCallback(
+    (i: number) =>
+      safeMethod(videoRef.current?.setSubtitleTrack, "setSubtitleTrack")(i),
+    [videoRef],
+  );
+  const setSubtitleURL = useCallback(
+    (url: string, n: string) =>
+      safeMethod(videoRef.current?.setSubtitleURL, "setSubtitleURL")(url, n),
+    [videoRef],
+  );
 
-  const notTranscoding = !stream?.mediaSource.TranscodingUrl;
-  const initOptions = [`--sub-text-scale=${settings.subtitleSize}`];
-  if (
-    chosenSubtitleTrack &&
-    (notTranscoding || chosenSubtitleTrack.IsTextSubtitleStream)
-  ) {
-    const finalIndex = notTranscoding
-      ? allSubs.indexOf(chosenSubtitleTrack)
-      : textSubs.indexOf(chosenSubtitleTrack);
-    initOptions.push(`--sub-track=${finalIndex}`);
-  }
-
-  if (notTranscoding && chosenAudioTrack) {
-    initOptions.push(`--audio-track=${allAudio.indexOf(chosenAudioTrack)}`);
-  }
-
-  const [isMounted, setIsMounted] = useState(false);
-
-  // Add useEffect to handle mounting
+  /* ---------- memory / cache cleanup ---------- */
   useEffect(() => {
-    setIsMounted(true);
-    return () => setIsMounted(false);
-  }, []);
+    const interval = setInterval(() => {
+      if (!videoState.isPlaying) videoRef.current?.clearCache?.();
+    }, 60000); // every minute
+    return () => {
+      clearInterval(interval);
+      videoRef.current?.dispose?.();
+    };
+  }, [videoState.isPlaying]);
 
-  // Show error UI first, before checking loading/missing‐data
+  /* ---------- render guard ---------- */
+
   if (itemStatus.isError || streamStatus.isError) {
     return (
-      <View className='w-screen h-screen flex flex-col items-center justify-center bg-black'>
+      <View className='w-screen h-screen items-center justify-center bg-black'>
         <Text className='text-white'>{t("player.error")}</Text>
       </View>
     );
   }
 
-  // Then show loader while either side is still fetching or data isn’t present
   if (itemStatus.isLoading || streamStatus.isLoading || !item || !stream) {
-    // …loader UI…
     return (
-      <View className='w-screen h-screen flex flex-col items-center justify-center bg-black'>
+      <View className='w-screen h-screen items-center justify-center bg-black'>
         <Loader />
       </View>
     );
   }
 
-  if (itemStatus.isError || streamStatus.isError)
-    return (
-      <View className='w-screen h-screen flex flex-col items-center justify-center bg-black'>
-        <Text className='text-white'>{t("player.error")}</Text>
-      </View>
-    );
-
+  /* ---------- render ---------- */
   return (
     <View style={{ flex: 1, backgroundColor: "black" }}>
       <View
         style={{
-          display: "flex",
           width: "100%",
           height: "100%",
-          position: "relative",
-          flexDirection: "column",
-          justifyContent: "center",
           paddingLeft: ignoreSafeAreas ? 0 : insets.left,
           paddingRight: ignoreSafeAreas ? 0 : insets.right,
         }}
@@ -560,21 +681,19 @@ export default function page() {
         <VlcPlayerView
           ref={videoRef}
           source={{
-            uri: stream?.url || "",
+            uri: stream.url,
             autoplay: true,
             isNetwork: true,
             startPosition,
             externalSubtitles,
-            initOptions,
+            initOptions: optimizedInitOptions,
           }}
           style={{ width: "100%", height: "100%" }}
           onVideoProgress={onProgress}
           progressUpdateInterval={1000}
           onVideoStateChange={onPlaybackStateChanged}
           onPipStarted={onPipStarted}
-          onVideoLoadEnd={() => {
-            setIsVideoLoaded(true);
-          }}
+          onVideoLoadEnd={() => dispatch({ type: "VIDEO_LOADED" })}
           onVideoError={(e) => {
             console.error("Video Error:", e.nativeEvent);
             Alert.alert(
@@ -585,33 +704,34 @@ export default function page() {
           }}
         />
       </View>
-      {!isPipStarted && isMounted === true && item && (
+
+      {!videoState.isPipStarted && (
         <Controls
-          mediaSource={stream?.mediaSource}
+          mediaSource={stream.mediaSource}
           item={item}
           videoRef={videoRef}
           togglePlay={togglePlay}
-          isPlaying={isPlaying}
+          isPlaying={videoState.isPlaying}
           isSeeking={isSeeking}
           progress={progress}
           cacheProgress={cacheProgress}
-          isBuffering={isBuffering}
+          isBuffering={videoState.isBuffering}
           showControls={showControls}
           setShowControls={setShowControls}
           setIgnoreSafeAreas={setIgnoreSafeAreas}
           ignoreSafeAreas={ignoreSafeAreas}
-          isVideoLoaded={isVideoLoaded}
-          startPictureInPicture={videoRef.current?.startPictureInPicture}
-          play={videoRef.current?.play}
-          pause={videoRef.current?.pause}
-          seek={videoRef.current?.seekTo}
-          enableTrickplay={true}
-          getAudioTracks={videoRef.current?.getAudioTracks}
-          getSubtitleTracks={videoRef.current?.getSubtitleTracks}
+          isVideoLoaded={videoState.isVideoLoaded}
+          startPictureInPicture={startPictureInPicture}
+          play={play}
+          pause={pause}
+          seek={seek}
+          enableTrickplay
+          getAudioTracks={getAudioTracks}
+          getSubtitleTracks={getSubtitleTracks}
           offline={offline}
-          setSubtitleTrack={videoRef.current?.setSubtitleTrack}
-          setSubtitleURL={videoRef.current?.setSubtitleURL}
-          setAudioTrack={videoRef.current?.setAudioTrack}
+          setSubtitleTrack={setSubtitleTrack}
+          setSubtitleURL={setSubtitleURL}
+          setAudioTrack={setAudioTrack}
           isVlc
         />
       )}
