@@ -1,3 +1,4 @@
+/* eslint-disable react-native/no-inline-styles */
 import {
   type BaseItemDto,
   type MediaSourceInfo,
@@ -48,32 +49,13 @@ import { storage } from "@/utils/mmkv";
 import generateDeviceProfile from "@/utils/profiles/native";
 import { msToTicks, ticksToSeconds } from "@/utils/time";
 
-/* ---------- helpers ---------- */
-
 const downloadProvider = !Platform.isTV
   ? require("@/providers/DownloadProvider")
   : { useDownload: () => null };
 
 const IGNORE_SAFE_AREAS_KEY = "video_player_ignore_safe_areas";
 
-/* ---------- performance monitor ---------- */
-
-const usePerformanceMonitoring = (name: string) => {
-  useEffect(() => {
-    const start = performance.now();
-    return () => {
-      const end = performance.now();
-      const ms = end - start;
-      if (ms > 16.67) {
-        // >1 frame at 60 fps
-        console.warn(`[Perf] ${name} render took ${ms.toFixed(1)} ms`);
-      }
-    };
-  });
-};
-
-/* ---------- reducer ---------- */
-
+/* Playback state reducer to consolidate related state */
 interface VideoState {
   isPlaying: boolean;
   isMuted: boolean;
@@ -95,6 +77,7 @@ const videoReducer = (state: VideoState, action: VideoAction): VideoState => {
     case "BUFFERING_CHANGED":
       return { ...state, isBuffering: action.value };
     case "VIDEO_LOADED":
+      // Mark video as loaded and buffering false here
       return { ...state, isVideoLoaded: true, isBuffering: false };
     case "MUTED_CHANGED":
       return { ...state, isMuted: action.value };
@@ -113,23 +96,16 @@ const initialVideoState: VideoState = {
   isPipStarted: false,
 };
 
-/* ---------- main component ---------- */
-
 export default function DirectPlayerPage() {
-  usePerformanceMonitoring("DirectPlayerPage");
-
-  /* ---------- refs & atoms ---------- */
   const videoRef = useRef<VlcPlayerViewRef>(null);
   const user = useAtomValue(userAtom);
   const api = useAtomValue(apiAtom);
-
   const navigation = useNavigation();
   const { t } = useTranslation();
 
-  /* ---------- consolidated playback state ---------- */
+  /* Consolidated video playback state */
   const [videoState, dispatch] = useReducer(videoReducer, initialVideoState);
 
-  /* ---------- misc UI state ---------- */
   const [showControls, _setShowControls] = useState(true);
   const [ignoreSafeAreas, setIgnoreSafeAreas] = useState(() => {
     return storage.getBoolean(IGNORE_SAFE_AREAS_KEY) ?? false;
@@ -147,7 +123,6 @@ export default function DirectPlayerPage() {
     ? null
     : require("react-native-volume-manager");
 
-  /* ---------- URL params ---------- */
   const {
     itemId,
     audioIndex: audioIndexStr,
@@ -173,7 +148,6 @@ export default function DirectPlayerPage() {
     ? parseInt(bitrateValueStr, 10)
     : BITRATES[0].value;
 
-  /* ---------- stable callbacks ---------- */
   const setShowControls = useCallback(
     (show: boolean) => {
       _setShowControls(show);
@@ -186,9 +160,7 @@ export default function DirectPlayerPage() {
     storage.set(IGNORE_SAFE_AREAS_KEY, ignoreSafeAreas);
   }, [ignoreSafeAreas]);
 
-  /* ---------- data fetching ---------- */
-
-  /* item */
+  /* Fetch the item info */
   const [item, setItem] = useState<BaseItemDto | null>(null);
   const [itemStatus, setItemStatus] = useState({
     isLoading: true,
@@ -236,7 +208,7 @@ export default function DirectPlayerPage() {
     return () => controller.abort();
   }, [itemId, offline, api, user?.Id, getDownloadedItem]);
 
-  /* stream */
+  /* Fetch stream info */
   interface Stream {
     mediaSource: MediaSourceInfo;
     sessionId: string;
@@ -306,10 +278,9 @@ export default function DirectPlayerPage() {
     subtitleIndex,
   ]);
 
-  /* ---------- playback API reporting ---------- */
-
   const revalidateProgressCache = useInvalidatePlaybackProgressCache();
 
+  /* Memoized playback state info for reporting */
   const currentPlayStateInfo = useMemo(() => {
     if (!stream) return null;
     return {
@@ -337,6 +308,7 @@ export default function DirectPlayerPage() {
     stream,
   ]);
 
+  /* Playback progress reporting */
   const reportPlaybackProgress = useCallback(async () => {
     if (!api || offline || !stream || !currentPlayStateInfo) return;
     await getPlaystateApi(api).reportPlaybackProgress({
@@ -344,6 +316,7 @@ export default function DirectPlayerPage() {
     });
   }, [api, offline, stream, currentPlayStateInfo]);
 
+  /* Report playback stopped */
   const reportPlaybackStopped = useCallback(async () => {
     if (offline || !stream) return;
     await getPlaystateApi(api!).onPlaybackStopped({
@@ -363,8 +336,7 @@ export default function DirectPlayerPage() {
     revalidateProgressCache,
   ]);
 
-  /* ---------- UI / player actions ---------- */
-
+  /* Toggle play/pause */
   const togglePlay = useCallback(async () => {
     lightHapticFeedback();
     const playing = videoState.isPlaying;
@@ -375,9 +347,11 @@ export default function DirectPlayerPage() {
       reportPlaybackProgress();
     } else {
       await videoRef.current?.play();
-      await getPlaystateApi(api!).reportPlaybackStart({
-        playbackStartInfo: currentPlayStateInfo as PlaybackStartInfo,
-      });
+      if (currentPlayStateInfo) {
+        await getPlaystateApi(api!).reportPlaybackStart({
+          playbackStartInfo: currentPlayStateInfo as PlaybackStartInfo,
+        });
+      }
     }
   }, [
     videoState.isPlaying,
@@ -387,8 +361,7 @@ export default function DirectPlayerPage() {
     currentPlayStateInfo,
   ]);
 
-  /* ---------- React Navigation cleanup ---------- */
-
+  /* Stop playback and clean up */
   const stop = useCallback(() => {
     reportPlaybackStopped();
     setIsPlaybackStopped(true);
@@ -400,18 +373,15 @@ export default function DirectPlayerPage() {
     return unsubscribe;
   }, [navigation, stop]);
 
-  /* ---------- VLC init options ---------- */
-
+  /* VLC init options optimized for performance */
   const optimizedInitOptions = useMemo(() => {
     const opts = [`--sub-text-scale=${settings.subtitleSize}`];
-
-    // reduce buffering memory
+    // Reduce buffering memory usage
     opts.push("--network-caching=300", "--file-caching=300");
-
     if (Platform.OS === "android") opts.push("--aout=opensles");
     if (Platform.OS === "ios") opts.push("--ios-hw-decoding");
 
-    // pre-select tracks
+    // Pre-selection of audio & subtitle tracks handled here
     const notTranscoding = !stream?.mediaSource.TranscodingUrl;
     const allAudio =
       stream?.mediaSource.MediaStreams?.filter((s) => s.Type === "Audio") ?? [];
@@ -444,26 +414,20 @@ export default function DirectPlayerPage() {
     return opts;
   }, [settings.subtitleSize, stream?.mediaSource, subtitleIndex, audioIndex]);
 
-  /* ---------- picture-in-picture ---------- */
-
+  /* On Picture-In-Picture started or stopped */
   const onPipStarted = useCallback((e: PipStartedPayload) => {
     dispatch({ type: "PIP_CHANGED", value: e.nativeEvent.pipStarted });
   }, []);
 
-  /* ---------- progress ---------- */
-
+  /* Progress event handler */
   const onProgress = useCallback(
     (data: ProgressUpdatePayload) => {
       if (isSeeking.get() || isPlaybackStopped) return;
-
       if (videoState.isBuffering)
         dispatch({ type: "BUFFERING_CHANGED", value: false });
-
       const { currentTime } = data.nativeEvent;
       progress.set(currentTime);
-
       router.setParams({ playbackPosition: msToTicks(currentTime).toString() });
-
       if (!offline) reportPlaybackProgress();
     },
     [
@@ -476,12 +440,10 @@ export default function DirectPlayerPage() {
     ],
   );
 
-  /* ---------- playback state listener ---------- */
-
+  /* Playback state changes */
   const onPlaybackStateChanged = useCallback(
     async (e: PlaybackStatePayload) => {
       const { state, isBuffering, isPlaying } = e.nativeEvent;
-
       switch (state) {
         case "Playing":
           dispatch({ type: "PLAYING_CHANGED", value: true });
@@ -494,7 +456,6 @@ export default function DirectPlayerPage() {
           reportPlaybackProgress();
           break;
         default:
-          // fallback
           dispatch({ type: "BUFFERING_CHANGED", value: !!isBuffering });
           dispatch({ type: "PLAYING_CHANGED", value: !!isPlaying });
       }
@@ -502,85 +463,18 @@ export default function DirectPlayerPage() {
     [reportPlaybackProgress],
   );
 
-  /* ---------- web socket / remote ---------- */
-
-  /* volume handlers */
-  const [previousVolume, setPreviousVolume] = useState<number | null>(null);
-
-  const volumeUpCb = useCallback(async () => {
-    if (Platform.isTV) return;
-    const { volume } = await VolumeManager.getVolume();
-    await VolumeManager.setVolume(Math.min(volume + 0.1, 1));
-  }, []);
-
-  const volumeDownCb = useCallback(async () => {
-    if (Platform.isTV) return;
-    const { volume } = await VolumeManager.getVolume();
-    await VolumeManager.setVolume(Math.max(volume - 0.1, 0));
-  }, []);
-
-  const setVolumeCb = useCallback(async (v: number) => {
-    if (Platform.isTV) return;
-    await VolumeManager.setVolume(Math.max(0, Math.min(v, 100)) / 100);
-  }, []);
-
-  const toggleMuteCb = useCallback(async () => {
-    if (Platform.isTV) return;
-    const { volume } = await VolumeManager.getVolume();
-    const percent = volume * 100;
-    if (percent > 0) {
-      setPreviousVolume(percent);
-      await VolumeManager.setVolume(0);
-      dispatch({ type: "MUTED_CHANGED", value: true });
-    } else {
-      const restore = previousVolume || 50;
-      await VolumeManager.setVolume(restore / 100);
-      setPreviousVolume(null);
-      dispatch({ type: "MUTED_CHANGED", value: false });
-    }
-  }, [previousVolume]);
-
-  useWebSocket({
-    isPlaying: videoState.isPlaying,
-    togglePlay,
-    stopPlayback: stop,
-    offline,
-    toggleMute: toggleMuteCb,
-    volumeUp: volumeUpCb,
-    volumeDown: volumeDownCb,
-    setVolume: setVolumeCb,
-  });
-
-  /* ---------- start position ---------- */
-
-  const startPosition = useMemo(
-    () => (offline ? 0 : ticksToSeconds(getInitialPlaybackTicks())),
-    [offline, getInitialPlaybackTicks],
-  );
-
-  /* ---------- subtitle & audio helpers ---------- */
-
-  const _allAudio =
-    stream?.mediaSource.MediaStreams?.filter((a) => a.Type === "Audio") ?? [];
-  const allSubs =
-    stream?.mediaSource.MediaStreams?.filter(
-      (s) => s.Type === "Subtitle",
-    )?.sort((a, b) => Number(a.IsExternal) - Number(b.IsExternal)) ?? [];
-
-  const externalSubtitles = allSubs
-    .filter((s) => s.DeliveryMethod === "External")
-    .map((s) => ({
-      name: s.DisplayTitle,
-      DeliveryUrl: api?.basePath + s.DeliveryUrl,
-    }));
-
-  /* ---------- player helpers (memoised safe wrappers) ---------- */
+  /* Safe wrapper for player methods that skips calls if video not loaded */
   const safeMethod =
     <T extends unknown[]>(
       fn: ((...args: T) => any) | undefined,
       name: string,
     ) =>
     async (...args: T) => {
+      // New safeguard: skip calling if video not loaded yet
+      if (!videoState.isVideoLoaded) {
+        writeToLog("WARN", `${name} skipped - video not loaded yet`);
+        return;
+      }
       if (!fn) {
         writeToLog("ERROR", `${name} fn missing`, {
           isVideoLoaded: videoState.isVideoLoaded,
@@ -638,19 +532,56 @@ export default function DirectPlayerPage() {
     [videoRef],
   );
 
-  /* ---------- memory / cache cleanup ---------- */
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (!videoState.isPlaying) videoRef.current?.clearCache?.();
-    }, 60000); // every minute
-    return () => {
-      clearInterval(interval);
-      videoRef.current?.dispose?.();
-    };
-  }, [videoState.isPlaying]);
+  /* Volume handlers */
+  const [previousVolume, setPreviousVolume] = useState<number | null>(null);
+  const volumeUpCb = useCallback(async () => {
+    if (Platform.isTV) return;
+    const { volume } = await VolumeManager.getVolume();
+    await VolumeManager.setVolume(Math.min(volume + 0.1, 1));
+  }, []);
+  const volumeDownCb = useCallback(async () => {
+    if (Platform.isTV) return;
+    const { volume } = await VolumeManager.getVolume();
+    await VolumeManager.setVolume(Math.max(volume - 0.1, 0));
+  }, []);
+  const setVolumeCb = useCallback(async (v: number) => {
+    if (Platform.isTV) return;
+    await VolumeManager.setVolume(Math.max(0, Math.min(v, 100)) / 100);
+  }, []);
+  const toggleMuteCb = useCallback(async () => {
+    if (Platform.isTV) return;
+    const { volume } = await VolumeManager.getVolume();
+    const percent = volume * 100;
+    if (percent > 0) {
+      setPreviousVolume(percent);
+      await VolumeManager.setVolume(0);
+      dispatch({ type: "MUTED_CHANGED", value: true });
+    } else {
+      const restore = previousVolume || 50;
+      await VolumeManager.setVolume(restore / 100);
+      setPreviousVolume(null);
+      dispatch({ type: "MUTED_CHANGED", value: false });
+    }
+  }, [previousVolume]);
 
-  /* ---------- render guard ---------- */
+  useWebSocket({
+    isPlaying: videoState.isPlaying,
+    togglePlay,
+    stopPlayback: stop,
+    offline,
+    toggleMute: toggleMuteCb,
+    volumeUp: volumeUpCb,
+    volumeDown: volumeDownCb,
+    setVolume: setVolumeCb,
+  });
 
+  /* Calculate start position in seconds */
+  const startPosition = useMemo(
+    () => (offline ? 0 : ticksToSeconds(getInitialPlaybackTicks())),
+    [offline, getInitialPlaybackTicks],
+  );
+
+  /* Conditionally render based on loading and error state */
   if (itemStatus.isError || streamStatus.isError) {
     return (
       <View className='w-screen h-screen items-center justify-center bg-black'>
@@ -658,7 +589,6 @@ export default function DirectPlayerPage() {
       </View>
     );
   }
-
   if (itemStatus.isLoading || streamStatus.isLoading || !item || !stream) {
     return (
       <View className='w-screen h-screen items-center justify-center bg-black'>
@@ -667,7 +597,16 @@ export default function DirectPlayerPage() {
     );
   }
 
-  /* ---------- render ---------- */
+  const allSubs =
+    stream?.mediaSource.MediaStreams?.filter((s) => s.Type === "Subtitle") ||
+    [];
+  const externalSubtitles = allSubs
+    .filter((s) => s.DeliveryMethod === "External")
+    .map((s) => ({
+      name: s.DisplayTitle,
+      DeliveryUrl: api?.basePath + s.DeliveryUrl,
+    }));
+
   return (
     <View style={{ flex: 1, backgroundColor: "black" }}>
       <View
@@ -693,6 +632,7 @@ export default function DirectPlayerPage() {
           progressUpdateInterval={1000}
           onVideoStateChange={onPlaybackStateChanged}
           onPipStarted={onPipStarted}
+          // Mark video as loaded on load end to enable player method calls safely
           onVideoLoadEnd={() => dispatch({ type: "VIDEO_LOADED" })}
           onVideoError={(e) => {
             console.error("Video Error:", e.nativeEvent);
@@ -726,12 +666,17 @@ export default function DirectPlayerPage() {
           pause={pause}
           seek={seek}
           enableTrickplay
-          getAudioTracks={getAudioTracks}
-          getSubtitleTracks={getSubtitleTracks}
+          // Pass undefined for player methods until the video is loaded to avoid crashes
+          getAudioTracks={videoState.isVideoLoaded ? getAudioTracks : undefined}
+          getSubtitleTracks={
+            videoState.isVideoLoaded ? getSubtitleTracks : undefined
+          }
           offline={offline}
-          setSubtitleTrack={setSubtitleTrack}
-          setSubtitleURL={setSubtitleURL}
-          setAudioTrack={setAudioTrack}
+          setSubtitleTrack={
+            videoState.isVideoLoaded ? setSubtitleTrack : undefined
+          }
+          setSubtitleURL={videoState.isVideoLoaded ? setSubtitleURL : undefined}
+          setAudioTrack={videoState.isVideoLoaded ? setAudioTrack : undefined}
           isVlc
         />
       )}
