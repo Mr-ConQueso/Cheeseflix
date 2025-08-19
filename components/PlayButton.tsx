@@ -31,14 +31,13 @@ import { getPrimaryImageUrl } from "@/utils/jellyfin/image/getPrimaryImageUrl";
 import { getStreamUrl } from "@/utils/jellyfin/media/getStreamUrl";
 import { chromecast } from "@/utils/profiles/chromecast";
 import { chromecasth265 } from "@/utils/profiles/chromecasth265";
-import { runtimeTicksToMinutes } from "@/utils/time";
+import { runtimeTicksToMinutes, ticksToSeconds } from "@/utils/time";
 import type { Button } from "./Button";
 import type { SelectedOptions } from "./ItemContent";
 
 interface Props extends React.ComponentProps<typeof Button> {
   item: BaseItemDto;
   selectedOptions: SelectedOptions;
-  isOffline?: boolean;
 }
 
 const ANIMATION_DURATION = 500;
@@ -47,7 +46,6 @@ const MIN_PLAYBACK_WIDTH = 15;
 export const PlayButton: React.FC<Props> = ({
   item,
   selectedOptions,
-  isOffline,
   ...props
 }: Props) => {
   const { showActionSheetWithOptions } = useActionSheet();
@@ -77,7 +75,7 @@ export const PlayButton: React.FC<Props> = ({
       }
       router.push(`/player/direct-player?${q}`);
     },
-    [router, isOffline],
+    [router],
   );
 
   const onPress = useCallback(async () => {
@@ -92,8 +90,6 @@ export const PlayButton: React.FC<Props> = ({
       subtitleIndex: selectedOptions.subtitleIndex?.toString() ?? "",
       mediaSourceId: selectedOptions.mediaSource?.Id ?? "",
       bitrateValue: selectedOptions.bitrate?.value?.toString() ?? "",
-      playbackPosition: item.UserData?.PlaybackPositionTicks?.toString() ?? "0",
-      offline: isOffline ? "true" : "false",
     });
 
     const queryString = queryParams.toString();
@@ -206,7 +202,9 @@ export const PlayButton: React.FC<Props> = ({
                                   ],
                                 },
                       },
-                      startTime: 0,
+                      startTime: ticksToSeconds(
+                        item?.UserData?.PlaybackPositionTicks || 0,
+                      ),
                     })
                     .then(() => {
                       // state is already set when reopening current media, so skip it here.
