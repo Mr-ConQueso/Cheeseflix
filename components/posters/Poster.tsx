@@ -1,14 +1,20 @@
-import { Image } from "expo-image";
 import { View } from "react-native";
+import { OptimizedImage } from "../OptimizedImage";
 
 type PosterProps = {
   id?: string | null;
   url?: string | null;
   showProgress?: boolean;
   blurhash?: string | null;
+  priority?: "low" | "normal" | "high";
 };
 
-const Poster: React.FC<PosterProps> = ({ id, url, blurhash }) => {
+const Poster: React.FC<PosterProps> = ({
+  id,
+  url,
+  blurhash,
+  priority = "normal",
+}) => {
   if (!id && !url)
     return (
       <View
@@ -21,7 +27,7 @@ const Poster: React.FC<PosterProps> = ({ id, url, blurhash }) => {
 
   return (
     <View className='rounded-lg overflow-hidden border border-neutral-900'>
-      <Image
+      <OptimizedImage
         placeholder={
           blurhash
             ? {
@@ -38,7 +44,7 @@ const Poster: React.FC<PosterProps> = ({ id, url, blurhash }) => {
               }
             : null
         }
-        cachePolicy={"memory-disk"}
+        priority={priority}
         contentFit='cover'
         style={{
           aspectRatio: "10/15",

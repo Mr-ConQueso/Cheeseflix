@@ -173,6 +173,10 @@ export type Settings = {
   enableLeftSideBrightnessSwipe: boolean;
   enableRightSideVolumeSwipe: boolean;
   usePopularPlugin: boolean;
+  enableImageCaching: boolean;
+  imageCacheMaxSizeMB: number;
+  // Intro
+  hasShownIntro: boolean;
 };
 
 export interface Lockable<T> {
@@ -234,6 +238,10 @@ export const defaultValues: Settings = {
   enableLeftSideBrightnessSwipe: true,
   enableRightSideVolumeSwipe: true,
   usePopularPlugin: true,
+  enableImageCaching: false,
+  imageCacheMaxSizeMB: 500,
+  // Intro
+  hasShownIntro: false,
 };
 
 const loadSettings = (): Partial<Settings> => {

@@ -6,12 +6,15 @@ import { Text } from "@/components/common/Text";
 import { Colors } from "@/constants/Colors";
 import { useHaptic } from "@/hooks/useHaptic";
 import { useDownload } from "@/providers/DownloadProvider";
+import { useSettings } from "@/utils/atoms/settings";
+import { clearMediaCache, getCacheStats } from "@/utils/mediaCache";
 import { ListGroup } from "../list/ListGroup";
 import { ListItem } from "../list/ListItem";
 
 export const StorageSettings = () => {
   const { deleteAllFiles, appSizeUsage } = useDownload();
   const { t } = useTranslation();
+  const { settings } = useSettings();
   const successHapticFeedback = useHaptic("success");
   const errorHapticFeedback = useHaptic("error");
 
@@ -29,6 +32,13 @@ export const StorageSettings = () => {
     },
   });
 
+  const { data: cacheStats } = useQuery({
+    queryKey: ["imageCacheStats"],
+    queryFn: getCacheStats,
+    enabled: settings?.enableImageCaching ?? false,
+    refetchInterval: 30000, // Refetch every 30 seconds
+  });
+
   const onDeleteClicked = async () => {
     try {
       await deleteAllFiles();
@@ -36,6 +46,17 @@ export const StorageSettings = () => {
     } catch (_e) {
       errorHapticFeedback();
       toast.error(t("home.settings.toasts.error_deleting_files"));
+    }
+  };
+
+  const onClearCacheClicked = async () => {
+    try {
+      await clearMediaCache();
+      successHapticFeedback();
+    } catch (error) {
+      errorHapticFeedback();
+      console.error("Failed to clear cache:", error);
+      toast.error("Failed to clear image cache");
     }
   };
 
@@ -73,6 +94,14 @@ export const StorageSettings = () => {
                   backgroundColor: Colors.primaryLightRGB,
                 }}
               />
+              {cacheStats && settings?.enableImageCaching && (
+                <View
+                  style={{
+                    width: `${(cacheStats.totalSize / size.total) * 100}%`,
+                    backgroundColor: "#3B82F6", // blue-500
+                  }}
+                />
+              )}
             </View>
           )}
         </View>
@@ -98,6 +127,16 @@ export const StorageSettings = () => {
                   })}
                 </Text>
               </View>
+              {cacheStats && settings?.enableImageCaching && (
+                <View className='flex flex-row items-center'>
+                  <View className='w-3 h-3 rounded-full bg-blue-500 mr-1' />
+                  <Text className='text-white text-xs'>
+                    {t("home.settings.storage.image_cache", {
+                      cacheSize: cacheStats.sizeFormatted,
+                    })}
+                  </Text>
+                </View>
+              )}
             </View>
           )}
         </View>
@@ -109,6 +148,13 @@ export const StorageSettings = () => {
             onPress={onDeleteClicked}
             title={t("home.settings.storage.delete_all_downloaded_files")}
           />
+          {settings?.enableImageCaching && (
+            <ListItem
+              textColor='red'
+              onPress={onClearCacheClicked}
+              title={t("home.settings.storage.clear_image_cache")}
+            />
+          )}
         </ListGroup>
       )}
     </View>

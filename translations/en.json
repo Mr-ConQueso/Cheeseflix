@@ -202,8 +202,17 @@
         "storage_title": "Storage",
         "app_usage": "App {{usedSpace}}%",
         "device_usage": "Device {{availableSpace}}%",
+        "image_cache": "Image Cache {{cacheSize}}",
         "size_used": "{{used}} of {{total}} Used",
-        "delete_all_downloaded_files": "Delete All Downloaded Files"
+        "delete_all_downloaded_files": "Delete All Downloaded Files",
+        "clear_image_cache": "Clear Image Cache"
+      },
+      "image_caching": {
+        "title": "Image Caching",
+        "enable_caching": "Enable Image Caching",
+        "description": "Cache images for faster loading and better performance",
+        "max_cache_size": "Maximum Cache Size",
+        "max_cache_size_description": "Set cache size limit (50-2000 MB)"
       },
       "intro": {
         "show_intro": "Show Intro",

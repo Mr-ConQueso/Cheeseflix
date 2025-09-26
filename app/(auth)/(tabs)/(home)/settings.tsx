@@ -12,6 +12,7 @@ import { AudioToggles } from "@/components/settings/AudioToggles";
 import { ChromecastSettings } from "@/components/settings/ChromecastSettings";
 import DownloadSettings from "@/components/settings/DownloadSettings";
 import { GestureControls } from "@/components/settings/GestureControls";
+import { ImageCachingSettings } from "@/components/settings/ImageCachingSettings";
 import { MediaProvider } from "@/components/settings/MediaContext";
 import { MediaToggles } from "@/components/settings/MediaToggles";
 import { OtherSettings } from "@/components/settings/OtherSettings";
@@ -25,7 +26,7 @@ import { useJellyfin, userAtom } from "@/providers/JellyfinProvider";
 import { clearLogs } from "@/utils/log";
 import { storage } from "@/utils/mmkv";
 
-export default function settings() {
+export default function Settings() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [_user] = useAtom(userAtom);
@@ -74,6 +75,8 @@ export default function settings() {
         </MediaProvider>
 
         <OtherSettings />
+
+        <ImageCachingSettings />
 
         {!Platform.isTV && <DownloadSettings />}
 

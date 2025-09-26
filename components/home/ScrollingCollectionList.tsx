@@ -4,10 +4,12 @@ import {
   type QueryKey,
   useQuery,
 } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { ScrollView, View, type ViewProps } from "react-native";
 import { Text } from "@/components/common/Text";
 import MoviePoster from "@/components/posters/MoviePoster";
+import { useMediaCache } from "@/hooks/useMediaCache";
 import ContinueWatchingPoster from "../ContinueWatchingPoster";
 import { TouchableItemRouter } from "../common/TouchableItemRouter";
 import { ItemCardText } from "../ItemCardText";
@@ -42,7 +44,31 @@ export const ScrollingCollectionList: React.FC<Props> = ({
     refetchOnReconnect: true,
   });
 
+  const { preloadItemPosters, preloadContinueWatchingImages } = useMediaCache();
   const { t } = useTranslation();
+
+  // Preload images when data changes
+  useEffect(() => {
+    if (data?.length && !isOffline) {
+      // For continue watching or horizontal orientations, preload as high priority
+      if (
+        orientation === "horizontal" ||
+        title?.toLowerCase().includes("continue")
+      ) {
+        preloadContinueWatchingImages(data);
+      } else {
+        // For vertical lists, preload as normal priority
+        preloadItemPosters(data);
+      }
+    }
+  }, [
+    data,
+    orientation,
+    title,
+    isOffline,
+    preloadItemPosters,
+    preloadContinueWatchingImages,
+  ]);
 
   if (hideIfEmpty === true && data?.length === 0) return null;
   if (disabled || !title) return null;
