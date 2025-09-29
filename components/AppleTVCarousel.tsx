@@ -266,19 +266,24 @@ export const AppleTVCarousel: React.FC<AppleTVCarouselProps> = ({
     currentItem,
   ]);
 
+  // Safe function to update translateX shared value
+  const setTranslateX = (value: number) => {
+    translateX.value = value;
+  };
+
   useEffect(() => {
     if (!hasItems) {
       setCurrentIndex(initialIndex);
-      translateX.value = -initialIndex * screenWidth;
+      runOnJS(setTranslateX)(-initialIndex * screenWidth);
       return;
     }
 
     setCurrentIndex((prev) => {
       const newIndex = Math.min(prev, items.length - 1);
-      translateX.value = -newIndex * screenWidth;
+      runOnJS(setTranslateX)(-newIndex * screenWidth);
       return newIndex;
     });
-  }, [hasItems, items, initialIndex, translateX]);
+  }, [hasItems, items, initialIndex]);
 
   useEffect(() => {
     if (hasItems) {

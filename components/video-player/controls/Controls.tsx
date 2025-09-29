@@ -16,6 +16,7 @@ import {
 import { useWindowDimensions } from "react-native";
 import Animated, {
   Easing,
+  runOnJS,
   type SharedValue,
   useAnimatedReaction,
   useAnimatedStyle,
@@ -194,17 +195,29 @@ export const Controls: FC<Props> = ({
     zIndex: 10,
   }));
 
+  // Safe functions to update shared values
+  const setProgressValue = (value: number) => {
+    progress.value = value;
+  };
+
+  const setMaxValue = (value: number) => {
+    max.value = value;
+  };
+
   // Initialize progress values
   useEffect(() => {
     if (item) {
-      progress.value = isVlc
+      const progressValue = isVlc
         ? ticksToMs(item?.UserData?.PlaybackPositionTicks)
         : item?.UserData?.PlaybackPositionTicks || 0;
-      max.value = isVlc
+      const maxValue = isVlc
         ? ticksToMs(item.RunTimeTicks || 0)
         : item.RunTimeTicks || 0;
+
+      runOnJS(setProgressValue)(progressValue);
+      runOnJS(setMaxValue)(maxValue);
     }
-  }, [item, isVlc, progress, max]);
+  }, [item, isVlc]);
 
   // Navigation hooks
   const {

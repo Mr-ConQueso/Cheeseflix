@@ -2,7 +2,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import type { BaseItemDto } from "@jellyfin/sdk/lib/generated-client";
 import { useRouter } from "expo-router";
 import { useAtom } from "jotai";
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
 import { TouchableOpacity, View } from "react-native";
 import Animated, {
   Easing,
@@ -96,8 +96,10 @@ export const PlayButton: React.FC<Props> = ({
   useAnimatedReaction(
     () => derivedTargetWidth.value,
     (newWidth) => {
-      targetWidth.value = newWidth;
+      // Reset and animate width
       widthProgress.value = 0;
+      startWidth.value = targetWidth.value;
+      targetWidth.value = newWidth;
       widthProgress.value = withTiming(1, {
         duration: ANIMATION_DURATION,
         easing: Easing.bezier(0.7, 0, 0.3, 1.0),
@@ -109,8 +111,10 @@ export const PlayButton: React.FC<Props> = ({
   useAnimatedReaction(
     () => effectiveColors,
     (newColor) => {
-      endColor.value = newColor;
+      // Reset and animate color
       colorChangeProgress.value = 0;
+      startColor.value = endColor.value;
+      endColor.value = newColor;
       colorChangeProgress.value = withTiming(1, {
         duration: ANIMATION_DURATION,
         easing: Easing.bezier(0.9, 0, 0.31, 0.99),
@@ -118,17 +122,6 @@ export const PlayButton: React.FC<Props> = ({
     },
     [effectiveColors],
   );
-
-  useEffect(() => {
-    const timeout_2 = setTimeout(() => {
-      startColor.value = effectiveColors;
-      startWidth.value = targetWidth.value;
-    }, ANIMATION_DURATION);
-
-    return () => {
-      clearTimeout(timeout_2);
-    };
-  }, [effectiveColors, item]);
 
   /**
    * ANIMATED STYLES

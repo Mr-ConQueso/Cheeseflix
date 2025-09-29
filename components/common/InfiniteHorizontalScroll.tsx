@@ -91,7 +91,8 @@ export function InfiniteHorizontalScroll({
 
   useEffect(() => {
     if (data) {
-      animatedOpacity.value = 1;
+      // Use withTiming to animate opacity change instead of direct assignment
+      animatedOpacity.value = withTiming(1, { duration: 300 });
     }
   }, [data]);
 

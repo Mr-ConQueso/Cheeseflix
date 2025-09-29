@@ -3,7 +3,7 @@ import type React from "react";
 import { useEffect, useRef } from "react";
 import { Platform, StyleSheet, View } from "react-native";
 import { Slider } from "react-native-awesome-slider";
-import { useSharedValue } from "react-native-reanimated";
+import { runOnJS, useSharedValue } from "react-native-reanimated";
 import type { VolumeResult } from "react-native-volume-manager";
 
 const VolumeManager = Platform.isTV
@@ -24,12 +24,17 @@ const AudioSlider: React.FC<AudioSliderProps> = ({ setVisibility }) => {
 
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null); // Use a ref to store the timeout ID
 
+  // Safe function to update volume shared value
+  const setVolumeValue = (value: number) => {
+    volume.value = value;
+  };
+
   useEffect(() => {
     if (isTv) return;
     const fetchInitialVolume = async () => {
       try {
         const { volume: initialVolume } = await VolumeManager.getVolume();
-        volume.value = initialVolume * 100;
+        runOnJS(setVolumeValue)(initialVolume * 100);
       } catch (error) {
         console.error("Error fetching initial volume:", error);
       }
@@ -70,7 +75,7 @@ const AudioSlider: React.FC<AudioSliderProps> = ({ setVisibility }) => {
       (result: VolumeResult) => {
         // Only update if user is not currently interacting with the slider
         if (!isUserInteracting.current) {
-          volume.value = result.volume * 100;
+          runOnJS(setVolumeValue)(result.volume * 100);
         }
 
         setVisibility(true);

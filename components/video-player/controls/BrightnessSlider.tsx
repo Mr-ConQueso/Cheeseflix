@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Platform, StyleSheet, View } from "react-native";
 import { Slider } from "react-native-awesome-slider";
-import { useSharedValue } from "react-native-reanimated";
+import { runOnJS, useSharedValue } from "react-native-reanimated";
 
 // import * as Brightness from "expo-brightness";
 const Brightness = !Platform.isTV ? require("expo-brightness") : null;
@@ -17,7 +17,12 @@ const BrightnessSlider = () => {
   const isUserInteracting = useRef(false);
   const lastKnownBrightness = useRef<number>(50);
 
-  // Update brightness from device
+  // Safe function to update brightness shared value
+  const setBrightnessValue = (value: number) => {
+    brightness.value = value;
+  };
+
+  // Update brightness from device (wrapped to be safe for shared value writes)
   const updateBrightnessFromDevice = async () => {
     if (isTv || !Brightness || isUserInteracting.current) return;
 
@@ -27,7 +32,7 @@ const BrightnessSlider = () => {
 
       // Only update if brightness actually changed
       if (Math.abs(brightnessPercent - lastKnownBrightness.current) > 1) {
-        brightness.value = brightnessPercent;
+        runOnJS(setBrightnessValue)(brightnessPercent);
         lastKnownBrightness.current = brightnessPercent;
       }
     } catch (error) {
