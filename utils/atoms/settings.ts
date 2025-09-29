@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { Platform } from "react-native";
 import { BITRATES, type Bitrate } from "@/components/BitrateSelector";
 import * as ScreenOrientation from "@/packages/expo-screen-orientation";
-import { apiAtom } from "@/providers/JellyfinProvider";
+import { apiAtom } from "@/utils/atoms/jellyfin";
 import { writeInfoLog } from "@/utils/log";
 import { storage } from "../mmkv";
 

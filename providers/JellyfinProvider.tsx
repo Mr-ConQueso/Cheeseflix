@@ -1,12 +1,12 @@
 import "@/augmentations";
-import { type Api, Jellyfin } from "@jellyfin/sdk";
+import { Jellyfin } from "@jellyfin/sdk";
 import type { UserDto } from "@jellyfin/sdk/lib/generated-client/models";
 import { getUserApi } from "@jellyfin/sdk/lib/utils/api";
 import { useMutation } from "@tanstack/react-query";
 import axios, { AxiosError } from "axios";
 import { router, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { atom, useAtom } from "jotai";
+import { useAtom } from "jotai";
 import type React from "react";
 import {
   createContext,
@@ -23,6 +23,7 @@ import { getDeviceName } from "react-native-device-info";
 import uuid from "react-native-uuid";
 import { useInterval } from "@/hooks/useInterval";
 import { JellyseerrApi, useJellyseerr } from "@/hooks/useJellyseerr";
+import { apiAtom, userAtom } from "@/utils/atoms/jellyfin";
 import { useSettings } from "@/utils/atoms/settings";
 import { writeErrorLog, writeInfoLog } from "@/utils/log";
 import { storage } from "@/utils/mmkv";
@@ -32,9 +33,8 @@ interface Server {
   address: string;
 }
 
-export const apiAtom = atom<Api | null>(null);
-export const userAtom = atom<UserDto | null>(null);
-export const wsAtom = atom<WebSocket | null>(null);
+// Re-export atoms for backward compatibility
+export { apiAtom, userAtom, wsAtom } from "@/utils/atoms/jellyfin";
 
 interface JellyfinContextValue {
   discoverServers: (url: string) => Promise<Server[]>;
